@@ -61,6 +61,68 @@
   #loading-bar { position: absolute; inset: 0; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 100; color: #ff2200; font-size: 18px; gap: 16px; }
   #loading-bar .bar-wrap { width: 260px; height: 10px; background: #220000; border: 1px solid #660000; border-radius: 5px; overflow: hidden; }
   #loading-bar .bar-fill { height: 100%; background: #ff2200; width: 0%; transition: width 0.3s; border-radius: 5px; }
+  #mobile-controls {
+    position: absolute;
+    bottom: 64px;
+    left: 0; right: 0;
+    display: none;
+    pointer-events: none;
+    z-index: 20;
+  }
+  #joystick-zone {
+    position: absolute;
+    bottom: 20px;
+    left: 24px;
+    width: 130px;
+    height: 130px;
+    pointer-events: all;
+  }
+  #joystick-base {
+    width: 130px; height: 130px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.08);
+    border: 2px solid rgba(255,100,0,0.4);
+    position: relative;
+  }
+  #joystick-knob {
+    width: 52px; height: 52px;
+    border-radius: 50%;
+    background: rgba(255,80,0,0.55);
+    border: 2px solid #ff4400;
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    transition: none;
+  }
+  #btn-shoot {
+    position: absolute;
+    bottom: 36px;
+    right: 28px;
+    width: 80px; height: 80px;
+    border-radius: 50%;
+    background: rgba(180,0,0,0.6);
+    border: 3px solid #ff2200;
+    color: #fff;
+    font-size: 13px;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    letter-spacing: 1px;
+    pointer-events: all;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #look-zone {
+    position: absolute;
+    bottom: 0; right: 110px;
+    left: 175px;
+    top: 0;
+    pointer-events: all;
+  }
+  @media (pointer: coarse) {
+    #mobile-controls { display: block; }
+    #pointer-hint { display: none !important; }
+  }
 </style>
 </head>
 <body>
@@ -108,6 +170,15 @@
     <canvas id="gun-canvas" width="300" height="240"></canvas>
     <div id="msg"></div>
     <div id="pointer-hint">Click game to capture mouse</div>
+    <div id="mobile-controls">
+      <div id="look-zone"></div>
+      <div id="joystick-zone">
+        <div id="joystick-base">
+          <div id="joystick-knob"></div>
+        </div>
+      </div>
+      <div id="btn-shoot">FIRE</div>
+    </div>
     <div id="hud">
       <div class="hud-block" id="hud-health">
         <div class="hud-label">HEALTH</div>
@@ -745,6 +816,7 @@ function gameLoop(ts) {
   lastTime = ts;
 
   movePlayer(dt);
+  if (window._mobileMove) window._mobileMove(dt);
   updateEnemies(dt);
 
   if (shotCooldown > 0) shotCooldown -= dt;
@@ -841,6 +913,110 @@ window.addEventListener('resize', resizeCanvas);
 document.getElementById('start-btn').onclick    = startGame;
 document.getElementById('retry-btn').onclick    = startGame;
 document.getElementById('play-again-btn').onclick = startGame;
+
+// ================================================================
+//  MOBILE / TABLET CONTROLS
+// ================================================================
+
+(function() {
+  const joystickZone = document.getElementById('joystick-zone');
+  const joystickKnob = document.getElementById('joystick-knob');
+  const btnShoot     = document.getElementById('btn-shoot');
+  const lookZone     = document.getElementById('look-zone');
+
+  const DEAD_ZONE = 8;
+  const MAX_DIST  = 50;
+  let joyActive = false, joyId = null;
+  let joyOriginX = 0, joyOriginY = 0;
+  let joyDX = 0, joyDY = 0;
+
+  // Joystick — move & strafe
+  joystickZone.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    const rect = joystickZone.getBoundingClientRect();
+    joyOriginX = rect.left + rect.width  / 2;
+    joyOriginY = rect.top  + rect.height / 2;
+    joyId = t.identifier;
+    joyActive = true;
+  }, { passive: false });
+
+  joystickZone.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier !== joyId) continue;
+      let dx = t.clientX - joyOriginX;
+      let dy = t.clientY - joyOriginY;
+      const dist = Math.sqrt(dx*dx + dy*dy);
+      if (dist > MAX_DIST) { dx = dx/dist*MAX_DIST; dy = dy/dist*MAX_DIST; }
+      joyDX = dx; joyDY = dy;
+      joystickKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    }
+  }, { passive: false });
+
+  joystickZone.addEventListener('touchend', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier !== joyId) continue;
+      joyActive = false; joyDX = 0; joyDY = 0;
+      joystickKnob.style.transform = 'translate(-50%, -50%)';
+    }
+  }, { passive: false });
+
+  // Look zone — swipe to rotate
+  let lookId = null, lastLookX = 0;
+  lookZone.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    lookId = t.identifier;
+    lastLookX = t.clientX;
+  }, { passive: false });
+
+  lookZone.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier !== lookId) continue;
+      const dx = t.clientX - lastLookX;
+      lastLookX = t.clientX;
+      if (gameRunning) player.angle += dx * 0.008;
+    }
+  }, { passive: false });
+
+  lookZone.addEventListener('touchend', e => {
+    e.preventDefault();
+    lookId = null;
+  }, { passive: false });
+
+  // Shoot button
+  btnShoot.addEventListener('touchstart', e => {
+    e.preventDefault();
+    if (gameRunning && shotCooldown <= 0) shoot();
+  }, { passive: false });
+
+  // Hook joystick into movement each frame
+  const _origMove = movePlayer;
+  window._mobileMove = function(dt) {
+    if (!joyActive) return;
+    const spd = PLAYER_SPEED * dt * 60;
+    const nx2 = Math.abs(joyDX) > DEAD_ZONE ? joyDX / MAX_DIST : 0;
+    const ny2 = Math.abs(joyDY) > DEAD_ZONE ? joyDY / MAX_DIST : 0;
+    let nx = player.x, ny = player.y;
+    // forward/back
+    if (ny2 !== 0) {
+      nx += Math.cos(player.angle) * (-ny2) * spd;
+      ny += Math.sin(player.angle) * (-ny2) * spd;
+    }
+    // strafe
+    if (nx2 !== 0) {
+      nx += Math.cos(player.angle + Math.PI/2) * nx2 * spd;
+      ny += Math.sin(player.angle + Math.PI/2) * nx2 * spd;
+    }
+    const R = 14;
+    if (!wallAt(nx+R,player.y)&&!wallAt(nx-R,player.y)) player.x = nx;
+    if (!wallAt(player.x,ny+R)&&!wallAt(player.x,ny-R)) player.y = ny;
+    if (joyActive) gunBob += 0.14;
+  };
+})();
 
 // ================================================================
 //  BOOT — generate sprites, then show title
