@@ -722,6 +722,7 @@ function updateEnemies(dt) {
     if (e.attackTimer <= 0 && dist < 90) {
       const dmg = e.type === 'baron' ? 14 : 9;
       player.health = Math.max(0, player.health - dmg);
+      playHurt();
       hitFlashAlpha = 0.9;
       e.attackTimer = e.type === 'baron' ? 1.6 : 1.1;
       updateHUD();
@@ -739,11 +740,12 @@ function updateEnemies(dt) {
 
 function shoot() {
   if (!gameRunning || shotCooldown > 0) return;
-  if (player.ammo <= 0) { showMsg('NO AMMO!', 1.5); return; }
+ if (player.ammo <= 0) { playDryFire(); showMsg('NO AMMO!', 1.5); return; }
   player.ammo--;
   ammoValEl.textContent = player.ammo;
   shootFlashAlpha = 1;
   gunAnim = 1;
+  playGunshot();   // <-- add this
   shotCooldown = 0.28;
 
   let closestDist = Infinity, target = null;
@@ -764,6 +766,7 @@ function shoot() {
     target.alerted = true;
     if (target.health <= 0) {
       target.alive = false;
+      playEnemyDie();
       kills++;
       killsValEl.textContent = kills + '/' + TOTAL_KILLS;
       const left = TOTAL_KILLS - kills;
@@ -863,6 +866,7 @@ function gameLoop(ts) {
 // ================================================================
 
 function startGame() {
+  initAudio();
   if (rafId) cancelAnimationFrame(rafId);
   resetGame();
   titleScreen.style.display = 'none';
@@ -964,15 +968,44 @@ document.getElementById('play-again-btn').onclick = startGame;
   }, { passive: false });
 
   // Look zone — swipe to rotate
+  // let lookId = null, lastLookX = 0;
+  // lookZone.addEventListener('touchstart', e => {
+  //   e.preventDefault();
+  //   const t = e.changedTouches[0];
+  //   lookId = t.identifier;
+  //   lastLookX = t.clientX;
+  // }, { passive: false });
+
+  // lookZone.addEventListener('touchmove', e => {
+  //   e.preventDefault();
+  //   for (const t of e.changedTouches) {
+  //     if (t.identifier !== lookId) continue;
+  //     const dx = t.clientX - lastLookX;
+  //     lastLookX = t.clientX;
+  //     if (gameRunning) player.angle += dx * 0.008;
+  //   }
+  // }, { passive: false });
+
+  // lookZone.addEventListener('touchend', e => {
+  //   e.preventDefault();
+  //   lookId = null;
+  // }, { passive: false });
+  // Look — listen on canvas directly, ignore joystick & shoot touches
   let lookId = null, lastLookX = 0;
-  lookZone.addEventListener('touchstart', e => {
+  const RIGHT_HALF = () => window.innerWidth / 2;
+
+  canvas.addEventListener('touchstart', e => {
     e.preventDefault();
-    const t = e.changedTouches[0];
-    lookId = t.identifier;
-    lastLookX = t.clientX;
+    for (const t of e.changedTouches) {
+      // only track touches starting on the right half of screen
+      if (t.clientX < RIGHT_HALF()) continue;
+      if (lookId !== null) continue;
+      lookId = t.identifier;
+      lastLookX = t.clientX;
+    }
   }, { passive: false });
 
-  lookZone.addEventListener('touchmove', e => {
+  canvas.addEventListener('touchmove', e => {
     e.preventDefault();
     for (const t of e.changedTouches) {
       if (t.identifier !== lookId) continue;
@@ -982,9 +1015,11 @@ document.getElementById('play-again-btn').onclick = startGame;
     }
   }, { passive: false });
 
-  lookZone.addEventListener('touchend', e => {
+  canvas.addEventListener('touchend', e => {
     e.preventDefault();
-    lookId = null;
+    for (const t of e.changedTouches) {
+      if (t.identifier === lookId) lookId = null;
+    }
   }, { passive: false });
 
   // Shoot button
@@ -1019,6 +1054,118 @@ document.getElementById('play-again-btn').onclick = startGame;
 })();
 
 // ================================================================
+// ================================================================
+//  SOUND SYSTEM — Web Audio API (no files needed)
+// ================================================================
+
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+
+function initAudio() {
+  if (!audioCtx) audioCtx = new AudioCtx();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+
+function playGunshot() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+
+  // Layer 1 — sharp crack (noise burst)
+  const bufSize = audioCtx.sampleRate * 0.08;
+  const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1);
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buf;
+  const noiseGain = audioCtx.createGain();
+  noiseGain.gain.setValueAtTime(1.2, t);
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+  const noiseFilter = audioCtx.createBiquadFilter();
+  noiseFilter.type = 'bandpass';
+  noiseFilter.frequency.value = 1800;
+  noiseFilter.Q.value = 0.8;
+  noise.connect(noiseFilter);
+  noiseFilter.connect(noiseGain);
+  noiseGain.connect(audioCtx.destination);
+  noise.start(t);
+
+  // Layer 2 — low punch / body
+  const osc = audioCtx.createOscillator();
+  const oscGain = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(180, t);
+  osc.frequency.exponentialRampToValueAtTime(40, t + 0.12);
+  oscGain.gain.setValueAtTime(1.5, t);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+  osc.connect(oscGain);
+  oscGain.connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + 0.15);
+
+  // Layer 3 — metallic click (shell)
+  const click = audioCtx.createOscillator();
+  const clickGain = audioCtx.createGain();
+  click.type = 'square';
+  click.frequency.setValueAtTime(900, t + 0.05);
+  click.frequency.exponentialRampToValueAtTime(200, t + 0.12);
+  clickGain.gain.setValueAtTime(0.3, t + 0.05);
+  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+  click.connect(clickGain);
+  clickGain.connect(audioCtx.destination);
+  click.start(t + 0.05); click.stop(t + 0.13);
+}
+
+function playDryFire() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(300, t);
+  osc.frequency.exponentialRampToValueAtTime(100, t + 0.06);
+  gain.gain.setValueAtTime(0.4, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + 0.07);
+}
+
+function playHurt() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const bufSize = audioCtx.sampleRate * 0.18;
+  const buf = audioCtx.createBuffer(1, bufSize, audioCtx.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * (1 - i/bufSize);
+  const noise = audioCtx.createBufferSource();
+  noise.buffer = buf;
+  const filter = audioCtx.createBiquadFilter();
+  filter.type = 'lowpass';
+  filter.frequency.value = 600;
+  const gain = audioCtx.createGain();
+  gain.gain.setValueAtTime(0.6, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+  noise.connect(filter); filter.connect(gain); gain.connect(audioCtx.destination);
+  noise.start(t);
+}
+
+function playEnemyDie() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.type = 'sawtooth';
+  osc.frequency.setValueAtTime(220, t);
+  osc.frequency.exponentialRampToValueAtTime(40, t + 0.35);
+  gain.gain.setValueAtTime(0.5, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35);
+  const dist = audioCtx.createWaveShaper();
+  const curve = new Float32Array(256);
+  for (let i = 0; i < 256; i++) { const x = (i*2)/256-1; curve[i] = (Math.PI+200)*x/(Math.PI+200*Math.abs(x)); }
+  dist.curve = curve;
+  osc.connect(dist); dist.connect(gain); gain.connect(audioCtx.destination);
+  osc.start(t); osc.stop(t + 0.35);
+}
+
 //  BOOT — generate sprites, then show title
 // ================================================================
 loadSprites(() => {
